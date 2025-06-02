@@ -35,183 +35,178 @@ Evaluate the model with test accuracy, confusion matrix, classification report, 
 ### Register Number: 212223220055
 
 ```
-import torch as t
+from google.colab import drive
+drive.mount('/content/drive')
+import torch
 import torch.nn as nn
-import torch.optim as optim
-import torchvision
-from torchvision import datasets,models
-from torchvision.models import VGG19_Weights
-import torchvision.transforms as transforms
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
-import matplotlib.pyplot as plt
+from torchvision import datasets, transforms, models # add models to the list
+from torchvision.utils import make_grid
+import os
+
 import numpy as np
-import seaborn as sns
-from sklearn.metrics import confusion_matrix, classification_report
-from torchsummary import summary
+import pandas as pd
+import matplotlib.pyplot as plt
+%matplotlib inline
 
-transform=transforms.Compose([transforms.Resize((224,224)),transforms.ToTensor()])
+# ignore harmless warnings
+import warnings
+warnings.filterwarnings("ignore")
+train_transform = transforms.Compose([
+        transforms.RandomRotation(10),      # rotate +/- 10 degrees
+        transforms.RandomHorizontalFlip(),  # reverse 50% of images
+        transforms.Resize(224),             # resize shortest side to 224 pixels
+        transforms.CenterCrop(224),         # crop longest side to 224 pixels at center
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406],
+                             [0.229, 0.224, 0.225])
+    ])
 
-!unzip -qq ./chip_data.zip -d data
-dataset_path='./data/dataset'
-train_dataset=datasets.ImageFolder(root=f"{dataset_path}/train",transform=transform)
-test_dataset=datasets.ImageFolder(root=f"{dataset_path}/test",transform=transform)
+test_transform = transforms.Compose([
+        transforms.Resize(224),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406],
+                             [0.229, 0.224, 0.225])
+    ])
+root = '/content/drive/MyDrive/train_test'
 
-def show_sample_images(dataset,num_images=5):
-  fig,axes=plt.subplots(1,num_images,figsize=(5,5))
-  for i in range(num_images):
-    image,label=dataset[i]
-    image=image.permute(1,2,0)
-    axes[i].imshow(image)
-    axes[i].set_title(dataset.classes[label])
-    axes[i].axis("off")
-  plt.show()
-print("Number of training samples:",len(train_dataset))
-first_image,label=train_dataset[0]
-print("Image shape:",first_image.shape)
+train_data = datasets.ImageFolder(os.path.join(root, 'Train'), transform=train_transform)
+test_data = datasets.ImageFolder(os.path.join(root, 'Test'), transform=test_transform)
 
-print("Number of testing samples:",len(test_dataset))
-first_image1,label=test_dataset[0]
-print("Image shape:",first_image1.shape)
+torch.manual_seed(42)
+train_loader = DataLoader(train_data, batch_size=10, shuffle=True)
+test_loader = DataLoader(test_data, batch_size=10, shuffle=True)
 
-train_loader=DataLoader(train_dataset,batch_size=32,shuffle=True)
-test_loader=DataLoader(test_dataset,batch_size=32,shuffle=False)
+class_names = train_data.classes
 
-model=models.vgg19(weights=VGG19_Weights.DEFAULT)
-device=t.device("cuda" if t.cuda.is_available() else "cpu")
-model=model.to(device)
-summary(model,input_size=(3,224,224))
+print(class_names)
+print(f'Training images available: {len(train_data)}')
+print(f'Testing images available:  {len(test_data)}')
+vgg19model = models.vgg19(pretrained=True)
+vgg19model
+for param in vgg19model.parameters():
+    param.requires_grad = False
+import torch
+import torch.nn as nn
+from torchvision import models
 
-model.classifier[-1]=nn.Linear(model.classifier[-1].in_features,1)
-device=t.device("cuda" if t.cuda.is_available() else "cpu")
-model=model.to(device)
-summary(model,input_size=(3,224,224))
+# Set manual seed
+torch.manual_seed(42)
 
-for param in model.features.parameters():
-  param.requires_grad=False
+# Load pre-trained VGG19 model
+VGG19model = models.vgg19(pretrained=True)
 
-criterion=nn.BCEWithLogitsLoss()
-optimizer=optim.Adam(model.parameters(),lr=0.001)
+# Modify the classifier
+VGG19model.classifier = nn.Sequential(
+    nn.Linear(25088, 1024),
+    nn.ReLU(),
+    nn.Dropout(0.4),
+    nn.Linear(1024, 2),    # Assuming you want 2 output classes
+    nn.LogSoftmax(dim=1)
+)
+for param in vgg19model.parameters():
+    print(param.numel())
+criterion = nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(vgg19model.classifier.parameters(), lr=0.001)
+# Set time tracking
+import time
+start_time = time.time()
 
-def train_model(model,train_loader,test_loader,num_epochs=100):
-  train_losses=[]
-  val_losses=[]
-  for epoch in range(num_epochs):
-    running_loss=0.0
-    for images,labels in train_loader:
-      images,labels=images.to(device),labels.to(device)
-      optimizer.zero_grad()
-      outputs=model(images)
-      loss=criterion(outputs,labels.unsqueeze(1).float())
-      loss.backward()
-      optimizer.step()
-      running_loss+=loss.item()
-    train_losses.append(running_loss/len(train_loader))
+epochs = 3
+max_trn_batch = 88  # As per your dataset size
+max_tst_batch = 20  # As per your test dataset size
 
-    model.eval()
-    val_loss=0.0
-    with t.no_grad():
-      for images,labels in test_loader:
-        images,labels=images.to(device),labels.to(device)
-        outputs=model(images)
-        loss=criterion(outputs,labels.unsqueeze(1).float())
-        val_loss+=loss.item()
-    val_losses.append(val_loss/len(test_loader))
-    model.train()
+train_losses = []
+test_losses = []
+train_correct = []
+test_correct = []
 
-    print(f"Epoch [{epoch+1}/{num_epochs}], Train Loss: {train_losses[-1]:.4f}, Validation Loss: {val_losses[-1]:.4f}")
-  plt.figure(figsize=(8,6))
-  plt.plot(range(1,num_epochs+1),train_losses,label="Train Loss",marker="o")
-  plt.plot(range(1,num_epochs+1),val_losses,label="Validation Loss",marker="s")
-  plt.xlabel("Epochs")
-  plt.ylabel("Loss")
-  plt.title("Training and validation Loss")
-  plt.legend()
-  plt.show()
-  
-device=t.device("cuda" if t.cuda.is_available() else "cpu")
-model=model.to(device)
-train_model(model,train_loader,test_loader)
+for i in range(epochs):
+    trn_corr = 0
+    tst_corr = 0
 
-def test_model(model,test_loader):
-  model.eval()
-  correct=0
-  total=0
-  all_preds=[]
-  all_labels=[]
+    # Run the training batches
+    for b, (X_train, y_train) in enumerate(train_loader):
+        if b == max_trn_batch:
+            break
+        b+=1
 
-  with t.no_grad():
-    for images,labels in test_loader:
-      images=images.to(device)
-      labels=labels.float().unsqueeze(1).to(device)
+        # X_train, y_train = X_train.to(device), y_train.to(device)
 
-      outputs=model(images)
-      probs=t.sigmoid(outputs)
-      predicted=(probs > 0.5).int()
-      total+=labels.size(0)
-      correct+=(predicted==labels.int()).sum().item()
+        # Apply the model
+        y_pred = VGG19model(X_train)
+        loss = criterion(y_pred, y_train)
 
-      all_preds.extend(predicted.cpu().numpy())
-      all_labels.extend(labels.cpu().numpy().astype(int))
-  accuracy=correct/total
-  print(f"Test Accuracy: {accuracy:.4f}")
+        # Tally the number of correct predictions
+        predicted = torch.max(y_pred.data, 1)[1]
+        batch_corr = (predicted == y_train).sum()
+        trn_corr += batch_corr
 
-  class_names=['Negative','Positive']
-  cm=confusion_matrix(all_labels,all_preds)
-  plt.figure(figsize=(6,5))
-  sns.heatmap(cm,annot=True,fmt='d',cmap='Blues',xticklabels=class_names,yticklabels=class_names)
-  plt.xlabel("Predicted")
-  plt.ylabel("Actual")
-  plt.title("Confusion Matrix")
-  plt.show()
+        # Update parameters
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
 
-  
-  print("Classification Report :")
-  print(classification_report(all_labels,all_preds,target_names=class_names))
-test_model(model,test_loader)
+  # Print interim results
+        if b%20==0:
+          acc = trn_corr.item()*100 / ((b+1)*train_loader.batch_size)
+          print(f'epoch: {i+1}  batch: {b+1} loss: {loss.item():.4f} accuracy: {acc:.2f}%')
 
-def predict_image(model,image_index,dataset):
-  model.eval()
-  image,label=dataset[image_index]
-  with t.no_grad():
-    image_tensor = image.unsqueeze(0).to(device)
-    output=model(image_tensor)
-    _,predicted=t.max(output,1)
-  class_names=dataset.classes
 
-  image_to_display=transforms.ToPILImage()(image)
+    train_losses.append(loss)
+    train_correct.append(trn_corr)
 
-  plt.figure(figsize=(4,4))
-  plt.imshow(image_to_display)
-  plt.title(f'Actual: {class_names[label]}\nPredicted: {class_names[predicted.item()]}')
-  plt.axis('off')
-  plt.show()
-predict_image(model,image_index=55,dataset=test_dataset)
-predict_image(model,image_index=25,dataset=test_dataset)
+    # X_test, y_test = X_test.to(device), y_test.to(device)
+
+    # Run the testing batches
+    with torch.no_grad():
+        for b, (X_test, y_test) in enumerate(test_loader):
+            if b == max_tst_batch:
+                break
+
+            # Apply the model
+            y_val = VGG19model(X_test)
+
+            # Tally the number of correct predictions
+            predicted = torch.max(y_val.data, 1)[1]
+            tst_corr += (predicted == y_test).sum()
+
+    loss = criterion(y_val, y_test)
+    test_losses.append(loss)
+    test_correct.append(tst_corr)
+
+print(f'\nDuration: {time.time() - start_time:.0f} seconds') # print the time elapsed
+
+print(test_correct)
+print(test_correct)
+print(f'Test accuracy: {test_correct[-1].item()*100/len(test_data):.3f}%')
+# Inverse normalize the images
+# Inverse normalize the images
+inv_normalize = transforms.Normalize(
+    mean=[-0.485/0.229, -0.456/0.224, -0.406/0.225],
+    std=[1/0.229, 1/0.224, 1/0.225])
+image_index = 16
+im = inv_normalize(test_data[image_index][0])
+plt.imshow(np.transpose(im.numpy(), (1, 2, 0)));
+plt.show()
+# VGG19 Model Prediction:
+
+VGG19model.eval()
+with torch.no_grad():
+    new_pred = VGG19model(test_data[image_index][0].view(1,3,224,224)).argmax()
+
+class_names[new_pred.item()]
 
 ```
 
 ### OUTPUT
 
-## Training Loss, Validation Loss Vs Iteration Plot
+![image](https://github.com/user-attachments/assets/1f6bcc65-6289-4b29-9e53-edfcc9f51a6d)
 
-![Screenshot 2025-05-29 021242](https://github.com/user-attachments/assets/5bb322dd-9974-4ea1-a72d-58669e5129f0)
+![image](https://github.com/user-attachments/assets/efb3a818-d760-44f0-b18a-d1f1a6ca34dc)
 
-
-## Confusion Matrix
-
-![Screenshot 2025-05-29 021253](https://github.com/user-attachments/assets/e661a07d-c184-4767-b3e5-ed5f7c81ee72)
-
-
-## Classification Report
-
-![Screenshot 2025-05-29 021304](https://github.com/user-attachments/assets/009e8994-ef78-490c-b047-b32789b1f9ec)
-
-
-### New Sample Data Prediction
-I
-![Screenshot (278)](https://github.com/user-attachments/assets/93095b7d-f0ed-4233-9fc2-ea28e44b770d)
-
-![Screenshot (279)](https://github.com/user-attachments/assets/991f770f-17a9-48c8-bbf1-6a71ea923b50)
 
 
 ## RESULT
